@@ -1,11 +1,15 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import firebase_admin
 from firebase_admin import credentials, auth
 
 app = Flask(__name__)
 
-cred = credentials.Certificate("path/to/serviceAccountKey.json")
+cred = credentials.Certificate("serviceAccountKey.json")
 firebase_admin.initialize_app(cred)
+
+@app.route('/')
+def home():
+    return render_template('authentication.html')
 
 @app.route("/upload")
 def upload_file():

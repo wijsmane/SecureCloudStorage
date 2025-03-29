@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In with Google</title>
+
+    <!-- imports -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyApVhfufGxoU-6LlIaJA_Ln8iagEiXkCdg",
+            authDomain: "cloudstorage-43f84.firebaseapp.com",
+            projectId: "cloudstorage-43f84",
+            storageBucket: "cloudstorage-43f84.firebasestorage.app",
+            messagingSenderId: "467372888058",
+            appId: "1:467372888058:web:16025efbdf2cc82637de43",
+            measurementId: "G-8G7P2ZS06P"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+
+        const auth = firebase.auth(); // initialise firebase authentication
+        const provider = new firebase.auth.GoogleAuthProvider(); // set Google as provider
+
+        async function signInWithGoogle() {
+            try {
+
+                const result = await auth.signInWithPopup(provider);
+
+                // get Google access token
+                // const credential = result.credential;
+                // const accessToken = credential.accessToken; 
+
+                const user = result.user;  // store user info
+
+                const idToken = await user.getIdToken(true); // get ID token
+
+                console.log("ID Token:", idToken);
+
+                console.log("User Info:", user);
+                // console.log("Access Token:", token);
+
+                // verify user token via backend
+                const response = await fetch("/verify-user", {
+                    method: "POST",
+                    headers: {
+                    "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ idToken: idToken })
+                });
+
+                const data = await response.json();
+                if (response.status === 200) {
+                    console.log("User verified:", data);
+                    window.location.href = "/home"; // redirect to home page
+                } 
+                else {
+                    console.error("Verification failed:", data);
+                }
+
+            } 
+            catch (error) {
+                console.error("Error during sign-in:", error);
+            }
+
+
+        }
+        </script>
+    </head>
+    <body>
+    <h1>Sign In with Google</h1>
+    <button onclick="signInWithGoogle()">Sign In with Google</button>
+    </body>
+</html>
