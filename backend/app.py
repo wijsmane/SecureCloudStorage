@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, requests, jsonify, render_template, make_response
 import firebase_admin
 from firebase_admin import credentials, auth
 
@@ -23,9 +23,25 @@ def verify_user():
 
     user_data = verify_token(id_token)
     if user_data:
-        return jsonify({"message": "User verified", "uid": user_data["uid"], "email": user_data.get("email")}), 200
+        uid = user_data["uid"]
+
+        # get Google Drive access token from request (if available)
+        access_token = data.get("accessToken")
+
+        response = make_response(jsonify({"message": "user verified", "uid": uid, "email": user_data.get("email")}))
+        
+        if access_token:
+            response.set_cookie(
+                "access_token", 
+                access_token, 
+                httponly=True,  # not accessible via JavaScript
+                secure=True,    # use HTTPS in production
+                samesite="Strict"
+            )
+
+        return response, 200
     else:
-        return jsonify({"message": "Invalid or expired token"}), 401
+        return jsonify({"message": "invalid or expired token"}), 401
     
 # checks provided token
 def verify_token(id_token):
@@ -35,6 +51,7 @@ def verify_token(id_token):
     except Exception as e:
         app.logger.error(f"Authentication failed: {e}")
         return None
+
 
 if __name__ == "__main__":
     app.run(debug=True)

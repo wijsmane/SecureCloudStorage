@@ -24,24 +24,16 @@
 
         const auth = firebase.auth(); // initialise firebase authentication
         const provider = new firebase.auth.GoogleAuthProvider(); // set Google as provider
+        provider.setCustomParameters({ prompt: "select_account" }); // ensure sign-in every time
 
         async function signInWithGoogle() {
             try {
 
                 const result = await auth.signInWithPopup(provider);
 
-                // get Google access token
-                // const credential = result.credential;
-                // const accessToken = credential.accessToken; 
-
                 const user = result.user;  // store user info
 
                 const idToken = await user.getIdToken(true); // get ID token
-
-                console.log("ID Token:", idToken);
-
-                console.log("User Info:", user);
-                // console.log("Access Token:", token);
 
                 // verify user token via backend
                 const response = await fetch("/verify-user", {
@@ -55,7 +47,7 @@
                 const data = await response.json();
                 if (response.status === 200) {
                     console.log("User verified:", data);
-                    window.location.href = "/home"; // redirect to home page
+                    window.location.href = "/home"; // redirect to home page after successful login
                 } 
                 else {
                     console.error("Verification failed:", data);
@@ -66,7 +58,13 @@
                 console.error("Error during sign-in:", error);
             }
 
-
+            auth.onAuthStateChanged(user => {
+            if (user) {
+                console.log("Already signed in as:", user);
+            } else {
+                console.log("Not signed in");
+            }
+        });
         }
         </script>
     </head>
