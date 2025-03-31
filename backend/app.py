@@ -1,4 +1,5 @@
-from flask import Flask, request, requests, jsonify, render_template, make_response
+from flask import Flask, request, jsonify, render_template, make_response
+import requests
 import firebase_admin
 from firebase_admin import credentials, auth
 
