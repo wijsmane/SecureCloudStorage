@@ -8,17 +8,13 @@
         <script type="module">
             import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
             import { getAuth, signOut, signInWithPopup, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
-    
-            const firebaseConfig = {
-                apiKey: "AIzaSyApVhfufGxoU-6LlIaJA_Ln8iagEiXkCdg",
-                authDomain: "cloudstorage-43f84.firebaseapp.com",
-                projectId: "cloudstorage-43f84",
-                storageBucket: "cloudstorage-43f84.firebasestorage.app", 
-                messagingSenderId: "467372888058",
-                appId: "1:467372888058:web:16025efbdf2cc82637de43",
-                measurementId: "G-8G7P2ZS06P"
-            };
-    
+
+            async function getFirebaseConfig() {
+                const response = await fetch("/firebase-config");
+                return await response.json();
+            }
+
+            const firebaseConfig = await getFirebaseConfig();
             const app = initializeApp(firebaseConfig);
             const auth = getAuth(app);
             const provider = new GoogleAuthProvider();

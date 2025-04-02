@@ -3,11 +3,16 @@ import requests
 import firebase_admin
 from firebase_admin import credentials, auth
 from config import CLIENT_ID, CLIENT_SECRET
+from config import FIREBASE_CONFIG
 
 app = Flask(__name__)
 
 cred = credentials.Certificate("serviceAccountKey.json")
 firebase_admin.initialize_app(cred)
+
+@app.route("/firebase-config")
+def firebase_config():
+    return jsonify(FIREBASE_CONFIG)
 
 @app.route('/')
 def authentication():
