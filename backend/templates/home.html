@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Cloud Storage</title>
+
+    <script>
+        async function listDriveFiles() {
+            try {
+                const response = await fetch("/get-drive-files", {
+                    method: "GET",
+                    credentials: "include",  // ensures cookies (which store tokens) are sent
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+                });
+
+                if (response.status === 401) {
+                    console.error("token invalid or expired");
+                    // popup to explain error
+                    alert("Session expired. Please sign in again.");
+                    window.location.href = "/";
+                    return;
+                }
+
+                const data = await response.json();
+                console.log("files: ", data);
+
+            } catch (error) {
+                console.error("error getting files: ", error);
+            }
+        }
+
+    </script>
+
+    <body>
+    <h1>SecureCloudStorage</h1>
+    <button onclick="upload_files()">Upload Files</button>
+    <button onclick="listDriveFiles()">List Drive Files</button>
+    <ul id="file-list"></ul>
+    </body>
+</html>

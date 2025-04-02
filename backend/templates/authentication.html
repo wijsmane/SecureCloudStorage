@@ -5,67 +5,71 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In with Google</title>
 
-    <!-- imports -->
-    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+        <script type="module">
+            import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
+            import { getAuth, signOut, signInWithPopup, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js";
+    
+            const firebaseConfig = {
+                apiKey: "AIzaSyApVhfufGxoU-6LlIaJA_Ln8iagEiXkCdg",
+                authDomain: "cloudstorage-43f84.firebaseapp.com",
+                projectId: "cloudstorage-43f84",
+                storageBucket: "cloudstorage-43f84.firebasestorage.app", 
+                messagingSenderId: "467372888058",
+                appId: "1:467372888058:web:16025efbdf2cc82637de43",
+                measurementId: "G-8G7P2ZS06P"
+            };
+    
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const provider = new GoogleAuthProvider();
+            provider.setCustomParameters({
+                prompt: "consent" // forces consent every time
+            });
+    
+            // only allow changes to files created within the app
+            provider.addScope("https://www.googleapis.com/auth/drive.file");
 
-    <script>
-        const firebaseConfig = {
-            apiKey: "AIzaSyApVhfufGxoU-6LlIaJA_Ln8iagEiXkCdg",
-            authDomain: "cloudstorage-43f84.firebaseapp.com",
-            projectId: "cloudstorage-43f84",
-            storageBucket: "cloudstorage-43f84.firebasestorage.app",
-            messagingSenderId: "467372888058",
-            appId: "1:467372888058:web:16025efbdf2cc82637de43",
-            measurementId: "G-8G7P2ZS06P"
-        };
+            async function signInWithGoogle() {
+                try {
+                    // console.log("🔹 Signing out to force re-authentication...");
+                    // await signOut(auth);
 
-        firebase.initializeApp(firebaseConfig);
+                    const result = await signInWithPopup(auth, provider);
+                    const user = result.user;
+                    const credential = GoogleAuthProvider.credentialFromResult(result);
+                    const accessToken = credential ? credential.accessToken : null;
 
-        const auth = firebase.auth(); // initialise firebase authentication
-        const provider = new firebase.auth.GoogleAuthProvider(); // set Google as provider
-        provider.setCustomParameters({ prompt: "select_account" }); // ensure sign-in every time
+                    const idToken = await user.getIdToken(true);
+                    const refreshToken = user.refreshToken;
 
-        async function signInWithGoogle() {
-            try {
+                    // console.log("user: ", user);
+                    // console.log("id token: ", idToken);
+                    // console.log("access token: ", accessToken);
+                    // console.log("refresh token: ", refreshToken);
 
-                const result = await auth.signInWithPopup(provider);
+                    // send tokens to backend for verification and storage
+                    const response = await fetch("/verify-user", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ idToken, accessToken, refreshToken })
+                    });
 
-                const user = result.user;  // store user info
+                    if (response.ok) {
+                        console.log("user verified");
+                        window.location.href = "/home";  // Redirect to home
+                    } else {
+                        console.error("user verification failed");
+                    }
 
-                const idToken = await user.getIdToken(true); // get ID token
-
-                // verify user token via backend
-                const response = await fetch("/verify-user", {
-                    method: "POST",
-                    headers: {
-                    "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({ idToken: idToken })
-                });
-
-                const data = await response.json();
-                if (response.status === 200) {
-                    console.log("User verified:", data);
-                    window.location.href = "/home"; // redirect to home page after successful login
-                } 
-                else {
-                    console.error("Verification failed:", data);
+                } catch (error) {
+                    console.error("sign-in error", error);
+                    // popup to alert specific error
+                    alert(`Error: ${error.code} - ${error.message}`);
                 }
-
-            } 
-            catch (error) {
-                console.error("Error during sign-in:", error);
             }
-
-            auth.onAuthStateChanged(user => {
-            if (user) {
-                console.log("Already signed in as:", user);
-            } else {
-                console.log("Not signed in");
-            }
-        });
-        }
+    
+            // Attach function to window for HTML button click
+            window.signInWithGoogle = signInWithGoogle;
         </script>
     </head>
     <body>
