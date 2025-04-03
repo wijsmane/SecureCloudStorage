@@ -1,43 +1,107 @@
 <!DOCTYPE html>
 <html lang="en">
     <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure Cloud Storage</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Secure Cloud Storage</title>
 
-    <script>
-        async function listDriveFiles() {
-            try {
-                const response = await fetch("/get-drive-files", {
-                    method: "GET",
-                    credentials: "include",  // ensures cookies (which store tokens) are sent
-                    headers: {
-                        "Content-Type": "application/json"
+        <script>
+            
+            // function to list files added by this app to Drive
+            async function listDriveFiles() {
+                try {
+                    const response = await fetch("/get-drive-files", {
+                        method: "GET",
+                        credentials: "include",  // ensures cookies (which store tokens) are sent
+                        headers: {
+                            "Content-Type": "application/json"
+                        }
+                    });
+
+                    if (response.status === 401) {
+                        console.error("token invalid or expired");
+                        // popup to explain error
+                        alert("Session expired. Please sign in again.");
+                        window.location.href = "/";
+                        return;
                     }
-                });
 
-                if (response.status === 401) {
-                    console.error("token invalid or expired");
-                    // popup to explain error
-                    alert("Session expired. Please sign in again.");
-                    window.location.href = "/";
+                    const data = await response.json();
+                    console.log("files: ", data);
+                    displayFiles(data.files);  // call function to display files
+
+                } 
+                catch (error) {
+                    console.error("error getting files: ", error);
+                }
+            }
+
+            // displays list of files
+            function displayFiles(files) {
+                const fileListElement = document.getElementById("file-list");
+                fileListElement.innerHTML = "";  // clear list to redo
+
+                files.forEach(file => {
+                    const x = document.createElement("li");
+                    x.textContent = file.name;
+                    fileListElement.appendChild(x);
+                });
+            }
+
+            // uploads file to Drive
+            async function uploadFile(event) {
+                event.preventDefault();  // ensures default form is not submitted
+
+                const formData = new FormData();
+                const fileInput = document.querySelector('input[type="file"]');
+                const file = fileInput.files[0];
+
+                if (!file) {
+                    alert("Please select a file");
                     return;
                 }
 
-                const data = await response.json();
-                console.log("files: ", data);
+                formData.append("file", file);
 
-            } catch (error) {
-                console.error("error getting files: ", error);
+                try {
+                    // send file to backend
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData, // contains file
+                        credentials: "include", // include tokens
+                    });
+
+                    const data = await response.json();
+                    if (response.ok) {
+                        alert(data.message);  // popup to display success message
+                    } else {
+                        alert("Error uploading file: " + data.error);
+                    }
+
+                } catch (error) {
+                    console.error("Error during file upload: ", error);
+                    alert("Something went wrong. Please try again later.");
+                }
             }
-        }
 
-    </script>
+        </script>
+    </head>
 
     <body>
-    <h1>SecureCloudStorage</h1>
-    <button onclick="upload_files()">Upload Files</button>
-    <button onclick="listDriveFiles()">List Drive Files</button>
-    <ul id="file-list"></ul>
+        <h1>SecureCloudStorage</h1>
+        <h3>Upload File to Google Drive</h3>
+
+        <!-- Form for file upload -->
+        <form onsubmit="uploadFile(event)">
+            <input type="file" name="file" />
+            <button type="submit">Upload</button>
+        </form>
+
+        <h3>Google Drive Files</h3>
+        <p>Click the button to list the files uploaded to Drive via this app</p>
+        <button onclick="listDriveFiles()">List Drive Files</button>
+        
+        <!-- List of files -->
+        <ul id="file-list"></ul>
     </body>
 </html>

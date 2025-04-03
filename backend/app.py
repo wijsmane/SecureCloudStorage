@@ -1,9 +1,12 @@
-from flask import Flask, request, jsonify, render_template, make_response, redirect
-import requests
-import firebase_admin
+from flask import Flask, request, jsonify, render_template, make_response
+import requests, firebase_admin, os, tempfile
 from firebase_admin import credentials, auth
 from config import CLIENT_ID, CLIENT_SECRET
 from config import FIREBASE_CONFIG
+
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+from googleapiclient.http import MediaFileUpload
 
 app = Flask(__name__)
 
@@ -92,15 +95,80 @@ def get_drive_files():
 
     # request from drive API using access token
     headers = {"Authorization": f"Bearer {access_token}"}
-    google_drive_url = "https://www.googleapis.com/drive/v3/files"
+    google_drive_url = "https://www.googleapis.com/drive/v3/files?q=trashed=false" # don't list files that are in trash
     response_drive = requests.get(google_drive_url, headers=headers)
 
-    if response_drive.status_code == 401:  # Token expired, refresh it
+    if response_drive.status_code == 401:  # token expired, refresh it
         return jsonify({"error": "access token expired, please re-authenticate"}), 401
     elif response_drive.status_code == 200:
         return jsonify(response_drive.json())
     else:
         return jsonify({"error": "failed to fetch files"}), response_drive.status_code
+    
+def get_drive_service(access_token):
+    access_token = request.cookies.get("access_token")
+    refresh_token = request.cookies.get("refresh_token")
+
+    if not access_token:
+        return None
+
+    creds = Credentials(
+        token=access_token,
+        refresh_token=refresh_token,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        token_uri="https://oauth2.googleapis.com/token"
+    )
+
+    # make Google Drive API service
+    return build('drive', 'v3', credentials=creds)
+
+# path to upload a file
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    # use Python temp directory
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, file.filename)
+
+    try:
+        file.save(file_path) # save file to temp dir
+
+        # access Drive API
+        service = get_drive_service(request.cookies.get("access_token"))
+        if not service:
+            return jsonify({"error": "Google Drive authentication failed"}), 400
+
+        # get the data associated with the file to store
+        file_metadata = {
+            'name': file.filename,
+            'mimeType': 'application/octet-stream',
+        }
+
+        # create object to handle upload
+        media = MediaFileUpload(file_path, mimetype='application/octet-stream', resumable = True)
+
+        # upload file to Drive
+        uploaded_file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+
+        # clean up
+        del media
+        os.remove(file_path)
+
+        return jsonify({"message": f"{file.filename} uploaded successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 def refresh_access_token(refresh_token):
     url = "https://oauth2.googleapis.com/token"
