@@ -1,17 +1,24 @@
 from flask import Flask, request, jsonify, render_template, make_response
 import requests, firebase_admin, os, tempfile
-from firebase_admin import credentials, auth
-from config import CLIENT_ID, CLIENT_SECRET
-from config import FIREBASE_CONFIG
+from firebase_admin import credentials, auth, firestore
+from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG
+
+from google.oauth2 import service_account
 
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaFileUpload
+
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
 
 app = Flask(__name__)
 
 cred = credentials.Certificate("serviceAccountKey.json")
 firebase_admin.initialize_app(cred)
+
+firestore_db = firestore.client()
+
+folder_id = "1XV2RurDdZAOol9yuYXxF9LE7RvwdA99v"
 
 @app.route("/firebase-config")
 def firebase_config():
@@ -47,9 +54,22 @@ def verify_user():
 
     if user_data:
         uid = user_data["uid"]
-        print(f"User ID: {uid}")
+        #print(f"User ID: {uid}")
 
-        response = make_response(jsonify({"message": "User verified", "uid": uid, "email": user_data.get("email")}))
+        private_key = generate_user_keys(uid) # creates encryption keys (if they don't already exist)
+
+        response = {
+            "message": "User verified", 
+            "uid": uid, 
+            "email": user_data.get("email"),
+            "private_key": "",
+        }
+        
+        if private_key != "keys already exist":
+            response["private_key"] = private_key
+            #print(f"{response["private_key"]}")
+
+        response = make_response(jsonify(response))
 
         # store tokens for later use
         response.set_cookie("access_token", access_token, httponly=True, secure=False, samesite="Strict")
@@ -71,57 +91,30 @@ def verify_token(id_token):
 # get files from drive
 @app.route("/get-drive-files", methods=["GET"])
 def get_drive_files():
-    access_token = request.cookies.get("access_token")
-    refresh_token = request.cookies.get("refresh_token")
+    try:
+        drive_service = get_drive_service()
 
-    if not access_token:
-        app.logger.warning("refreshing access token")
-        
-        if not refresh_token:
-            return jsonify({"error": "session expired, please re-authenticate"}), 401
-        
-        # get new access token if unavailable
-        new_access_token = refresh_access_token(refresh_token)
-        if not new_access_token:
-            return jsonify({"error": "failed to refresh access token"}), 401
+        # list files from the shared folder
+        query = f"'{FOLDER_ID}' in parents and trashed=false"
+        results = drive_service.files().list(q=query).execute()
 
-        app.logger.info("access token refreshed successfully")
+        files = results.get('files', [])
 
-        response = make_response(jsonify({"message": "access token refreshed, try again"}))
-        # set cookie with refreshed access token
-        response.set_cookie("access_token", new_access_token, httponly=True, secure=False, samesite="Strict")
+        return jsonify(files), 200
 
-        return response, 200
+    except Exception as e:
+        app.logger.error(f"Failed to fetch files: {e}")
+        return jsonify({"error": "Failed to fetch files from Drive"}), 500
 
-    # request from drive API using access token
-    headers = {"Authorization": f"Bearer {access_token}"}
-    google_drive_url = "https://www.googleapis.com/drive/v3/files?q=trashed=false" # don't list files that are in trash
-    response_drive = requests.get(google_drive_url, headers=headers)
-
-    if response_drive.status_code == 401:  # token expired, refresh it
-        return jsonify({"error": "access token expired, please re-authenticate"}), 401
-    elif response_drive.status_code == 200:
-        return jsonify(response_drive.json())
-    else:
-        return jsonify({"error": "failed to fetch files"}), response_drive.status_code
-    
-def get_drive_service(access_token):
-    access_token = request.cookies.get("access_token")
-    refresh_token = request.cookies.get("refresh_token")
-
-    if not access_token:
-        return None
-
-    creds = Credentials(
-        token=access_token,
-        refresh_token=refresh_token,
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        token_uri="https://oauth2.googleapis.com/token"
+# create service to work with Drive API through service account
+def get_drive_service():
+    credentials = service_account.Credentials.from_service_account_file(
+        "StorageDrive.json",
+        scopes=['https://www.googleapis.com/auth/drive']
     )
 
-    # make Google Drive API service
-    return build('drive', 'v3', credentials=creds)
+    drive_service = build('drive', 'v3', credentials=credentials)
+    return drive_service
 
 # path to upload a file
 @app.route('/upload', methods=['POST'])
@@ -138,28 +131,23 @@ def upload_file():
     file_path = os.path.join(temp_dir, file.filename)
 
     try:
-        file.save(file_path) # save file to temp dir
+        file.save(file_path) # save to temp
 
-        # access Drive API
-        service = get_drive_service(request.cookies.get("access_token"))
-        if not service:
-            return jsonify({"error": "Google Drive authentication failed"}), 400
+        service = get_drive_service()
 
-        # get the data associated with the file to store
         file_metadata = {
             'name': file.filename,
-            'mimeType': 'application/octet-stream',
+            'parents': [FOLDER_ID], # specify shared folder
         }
 
-        # create object to handle upload
-        media = MediaFileUpload(file_path, mimetype='application/octet-stream', resumable = True)
+        # object to deal with Google Drive uploads
+        media = MediaFileUpload(file_path, mimetype='application/octet-stream', resumable=True)
 
-        # upload file to Drive
         uploaded_file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
-        ).execute()
+            fields='id, name, parents'
+        ).execute() # upload file to specified folder
 
         # clean up
         del media
@@ -189,6 +177,33 @@ def refresh_access_token(refresh_token):
     else:
         app.logger.error("could not refresh access token")
         return None
+
+# creates RSA keys for the user and stores in firestore
+def generate_user_keys(uid):
+    # check database to see if keys already exist
+    user_doc = firestore_db.collection("users").document(uid).get()
+    if user_doc.exists and "public_key" in user_doc.to_dict():
+        return "keys already exist"
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+
+    # format keys to allow storage
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode()
+
+    public_key_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+
+    # store keys
+    firestore_db.collection("users").document(uid).set({"public_key": public_key_pem})
+
+    return private_key_pem
 
 if __name__ == "__main__":
     app.run(debug=True)

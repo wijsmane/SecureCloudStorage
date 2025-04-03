@@ -19,7 +19,7 @@
                     });
 
                     if (response.status === 401) {
-                        console.error("token invalid or expired");
+                        // console.error("token invalid or expired");
                         // popup to explain error
                         alert("Session expired. Please sign in again.");
                         window.location.href = "/";
@@ -27,8 +27,9 @@
                     }
 
                     const data = await response.json();
+                    
                     console.log("files: ", data);
-                    displayFiles(data.files);  // call function to display files
+                    displayFiles(data);  // call function to display files
 
                 } 
                 catch (error) {
@@ -41,16 +42,23 @@
                 const fileListElement = document.getElementById("file-list");
                 fileListElement.innerHTML = "";  // clear list to redo
 
-                files.forEach(file => {
+                // make sure files has items
+                if (Array.isArray(files) && files.length > 0) {
+                    files.forEach(file => {
+                        const x = document.createElement("li");
+                        x.textContent = file.name;
+                        fileListElement.appendChild(x);
+                    });
+                } else {
                     const x = document.createElement("li");
-                    x.textContent = file.name;
+                    x.textContent = "No files found.";
                     fileListElement.appendChild(x);
-                });
+                }
             }
-
+            
             // uploads file to Drive
             async function uploadFile(event) {
-                event.preventDefault();  // ensures default form is not submitted
+                event.preventDefault();  // ensures default form is not submitted on page load
 
                 const formData = new FormData();
                 const fileInput = document.querySelector('input[type="file"]');
@@ -91,7 +99,7 @@
         <h1>SecureCloudStorage</h1>
         <h3>Upload File to Google Drive</h3>
 
-        <!-- Form for file upload -->
+        <!-- form for file upload -->
         <form onsubmit="uploadFile(event)">
             <input type="file" name="file" />
             <button type="submit">Upload</button>
@@ -101,7 +109,7 @@
         <p>Click the button to list the files uploaded to Drive via this app</p>
         <button onclick="listDriveFiles()">List Drive Files</button>
         
-        <!-- List of files -->
+        <!-- list of files -->
         <ul id="file-list"></ul>
     </body>
 </html>

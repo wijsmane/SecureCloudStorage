@@ -27,8 +27,6 @@
 
             async function signInWithGoogle() {
                 try {
-                    // console.log("🔹 Signing out to force re-authentication...");
-                    // await signOut(auth);
 
                     const result = await signInWithPopup(auth, provider);
                     const user = result.user;
@@ -52,6 +50,25 @@
 
                     if (response.ok) {
                         console.log("user verified");
+                        const data = await response.json()
+                        console.log(data)
+                        // if the user gets a new private key, trigger the download
+                        if (data.private_key) {
+                            // store the unstructured file
+                            const blob = new Blob([data.private_key], { type: "text/plain" });
+                            
+                            // make a temp URL, click it, then remove it to download PK
+                            const a = document.createElement("a");
+                            a.href = URL.createObjectURL(blob);
+                            a.download = "private_key.pem"; // suggested file name for download
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+
+                            //console.log("finished download")
+                            alert("private key downloaded, please store securely")
+                        }
+
                         window.location.href = "/home";  // Redirect to home
                     } else {
                         console.error("user verification failed");
