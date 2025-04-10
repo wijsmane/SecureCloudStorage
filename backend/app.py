@@ -1,16 +1,14 @@
-import logging
-from flask import Flask, request, jsonify, render_template, make_response
+import logging, io
+from flask import Flask, request, jsonify, render_template, make_response, send_file
 import requests, firebase_admin, os, tempfile
 from firebase_admin import credentials, auth, firestore
 from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 from ownca import CertificateAuthority
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
 
 app = Flask(__name__)
 
@@ -166,6 +164,37 @@ def upload_file():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.route("/download//<file_id>", methods=['GET'])
+def download_file(file_id):
+    try:
+        drive_service = get_drive_service()
+        
+        # get the file name to ensure correct extension
+        file_metadata = drive_service.files().get(fileId=file_id, fields='name').execute()
+        filename = file_metadata.get('name', f"{file_id}.dat")  # default if name is missing
+
+        # download file content into memory
+        request = drive_service.files().get_media(fileId=file_id)
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request) # use the download object from Drive API
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+        file_stream.seek(0)  # reset stream position for next download
+
+        return send_file(
+            file_stream,
+            as_attachment=True,
+            download_name=filename,  # keep correct extension using original name
+            mimetype='application/octet-stream'
+        )
+
+    except Exception as e:
+        app.logger.error(f"Error downloading file: {str(e)}")
+        return jsonify({"error": "Failed to download file"}), 500
 
 def refresh_access_token(refresh_token):
     url = "https://oauth2.googleapis.com/token"
@@ -190,7 +219,7 @@ def refresh_access_token(refresh_token):
 def issue_user_certificate(uid):
     user_doc = firestore_db.collection("users").document(uid).get()
     if user_doc.exists and "public_certificate" in user_doc.to_dict():
-        return "Certificate already exists"
+        return "keys already exist"
 
     # get certificate using ownca library with a placeholder hostname (as app is not deployed)
     hostname = f"{uid}.user.cert"

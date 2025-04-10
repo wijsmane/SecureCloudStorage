@@ -45,9 +45,19 @@
                 // make sure files has items
                 if (Array.isArray(files) && files.length > 0) {
                     files.forEach(file => {
-                        const x = document.createElement("li");
-                        x.textContent = file.name;
-                        fileListElement.appendChild(x);
+                        const listItem = document.createElement("li");
+
+                        // create download link for each file
+                        const downloadLink = document.createElement("a");
+                        downloadLink.href = `/download/${file.id}`;  // link to download endpoint
+                        downloadLink.textContent = `${file.name}`;
+                        downloadLink.style.display = "block";
+                        downloadLink.style.marginBottom = "10px";
+
+                        // add download link to the list item
+                        listItem.appendChild(downloadLink);
+                        fileListElement.appendChild(listItem);
+
                     });
                 } else {
                     const x = document.createElement("li");
