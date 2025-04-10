@@ -1,17 +1,20 @@
+import logging
 from flask import Flask, request, jsonify, render_template, make_response
 import requests, firebase_admin, os, tempfile
 from firebase_admin import credentials, auth, firestore
 from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG
 
 from google.oauth2 import service_account
-
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+from ownca import CertificateAuthority
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 
 app = Flask(__name__)
+
+ca = CertificateAuthority(ca_storage='/backend', common_name='LocalCA')
 
 cred = credentials.Certificate("serviceAccountKey.json")
 firebase_admin.initialize_app(cred)
@@ -35,49 +38,55 @@ def home():
 # POST method to verify the user with id token from firebase and store access/refresh tokens in cookies
 @app.route("/verify-user", methods=["POST"])
 def verify_user():
-    data = request.get_json()
-    id_token = data.get("idToken")
-    access_token = data.get("accessToken")
-    refresh_token = data.get("refreshToken")
+    try:
+        app.logger.info("verifying")
+        data = request.get_json()
+        id_token = data.get("idToken")
+        access_token = data.get("accessToken")
+        refresh_token = data.get("refreshToken")
 
-    if not id_token:
-        return jsonify({"message": "ID Token is missing"}), 400
-    
-    if not access_token:
-        return jsonify({"message": "Access Token is missing"}), 400
-    
-    if not refresh_token:
-        return jsonify({"message": "Refresh Token is missing"}), 400
-    
-    # check if the id token is valid
-    user_data = verify_token(id_token)
-
-    if user_data:
-        uid = user_data["uid"]
-        #print(f"User ID: {uid}")
-
-        private_key = generate_user_keys(uid) # creates encryption keys (if they don't already exist)
-
-        response = {
-            "message": "User verified", 
-            "uid": uid, 
-            "email": user_data.get("email"),
-            "private_key": "",
-        }
+        if not id_token:
+            return jsonify({"message": "ID Token is missing"}), 400
         
-        if private_key != "keys already exist":
-            response["private_key"] = private_key
-            #print(f"{response["private_key"]}")
+        if not access_token:
+            return jsonify({"message": "Access Token is missing"}), 400
+        
+        if not refresh_token:
+            return jsonify({"message": "Refresh Token is missing"}), 400
+        
+        # check if the id token is valid
+        user_data = verify_token(id_token)
 
-        response = make_response(jsonify(response))
+        if user_data:
+            uid = user_data["uid"]
+            email = user_data["email"]
+            #print(f"User ID: {uid}")
 
-        # store tokens for later use
-        response.set_cookie("access_token", access_token, httponly=True, secure=False, samesite="Strict")
-        response.set_cookie("refresh_token", refresh_token, httponly=True, secure=False, samesite="Strict")
+            private_key = issue_user_certificate(uid) # issues cert and creates encryption keys (if they don't already exist)
 
-        return response, 200
-    else:
-        return jsonify({"message": "Invalid or expired token"}), 401
+            response = {
+                "message": "User verified", 
+                "uid": uid, 
+                "email": user_data.get("email"),
+                "private_key": "",
+            }
+            
+            if private_key != "keys already exist":
+                response["private_key"] = private_key
+                #print(f"{response["private_key"]}")
+
+            response = make_response(jsonify(response))
+
+            # store tokens for later use
+            response.set_cookie("access_token", access_token, httponly=True, secure=False, samesite="Strict")
+            response.set_cookie("refresh_token", refresh_token, httponly=True, secure=False, samesite="Strict")
+
+            return response, 200
+        else:
+            return jsonify({"message": "Invalid or expired token"}), 401
+    except Exception as e:
+        app.logger.error(f"Error in verify_user: {str(e)}")  # Log any unexpected errors
+        return jsonify({"message": "Internal Server Error"}), 500
     
 # verify and decode provided token
 def verify_token(id_token):
@@ -178,32 +187,35 @@ def refresh_access_token(refresh_token):
         app.logger.error("could not refresh access token")
         return None
 
-# creates RSA keys for the user and stores in firestore
-def generate_user_keys(uid):
-    # check database to see if keys already exist
+def issue_user_certificate(uid):
     user_doc = firestore_db.collection("users").document(uid).get()
-    if user_doc.exists and "public_key" in user_doc.to_dict():
-        return "keys already exist"
+    if user_doc.exists and "public_certificate" in user_doc.to_dict():
+        return "Certificate already exists"
 
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public_key = private_key.public_key()
+    # get certificate using ownca library with a placeholder hostname (as app is not deployed)
+    hostname = f"{uid}.user.cert"
+    cert_obj = ca.issue_certificate(
+        hostname=hostname,
+        dns_names=[hostname]
+    )
 
-    # format keys to allow storage
-    private_key_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption()
-    ).decode()
+    cert_pem = cert_obj.cert_bytes.decode() # decode cert for storage / return
 
-    public_key_pem = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
+    # ownca uses the cryptogrpahy library to generate RSA keys, default exponent 65537 and size 2048
+    private_key_pem = cert_obj.key_bytes.decode()
+    public_key_pem = cert_obj.public_key_bytes.decode()
 
-    # store keys
-    firestore_db.collection("users").document(uid).set({"public_key": public_key_pem})
+    # store cert and public key in database
+    firestore_db.collection("users").document(uid).set({
+        "public_certificate": cert_pem,
+        "public_key": public_key_pem
+    })
 
-    return private_key_pem
+    app.logger.info("issued cert and stored it")
+
+    return private_key_pem  # send private key to frontend for user to download
 
 if __name__ == "__main__":
     app.run(debug=True)
+    logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+    app.logger.setLevel(logging.DEBUG)

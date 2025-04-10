@@ -36,10 +36,10 @@
                     const idToken = await user.getIdToken(true);
                     const refreshToken = user.refreshToken;
 
-                    // console.log("user: ", user);
-                    // console.log("id token: ", idToken);
-                    // console.log("access token: ", accessToken);
-                    // console.log("refresh token: ", refreshToken);
+                    console.log("user: ", user);
+                    console.log("id token: ", idToken);
+                    console.log("access token: ", accessToken);
+                    console.log("refresh token: ", refreshToken);
 
                     // send tokens to backend for verification and storage
                     const response = await fetch("/verify-user", {
