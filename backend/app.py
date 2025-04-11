@@ -1,12 +1,15 @@
-import logging, io
+import logging, io, requests, firebase_admin, os, tempfile
 from flask import Flask, request, jsonify, render_template, make_response, send_file
-import requests, firebase_admin, os, tempfile
 from firebase_admin import credentials, auth, firestore
 from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.fernet import Fernet
 
 from ownca import CertificateAuthority
 
@@ -60,7 +63,7 @@ def verify_user():
             email = user_data["email"]
             #print(f"User ID: {uid}")
 
-            private_key = issue_user_certificate(uid) # issues cert and creates encryption keys (if they don't already exist)
+            private_key = issue_user_certificate(uid, email) # issues cert and creates encryption keys (if they don't already exist)
 
             response = {
                 "message": "User verified", 
@@ -216,7 +219,7 @@ def refresh_access_token(refresh_token):
         app.logger.error("could not refresh access token")
         return None
 
-def issue_user_certificate(uid):
+def issue_user_certificate(uid, email):
     user_doc = firestore_db.collection("users").document(uid).get()
     if user_doc.exists and "public_certificate" in user_doc.to_dict():
         return "keys already exist"
@@ -228,14 +231,21 @@ def issue_user_certificate(uid):
         dns_names=[hostname]
     )
 
-    cert_pem = cert_obj.cert_bytes.decode() # decode cert for storage / return
+    cert_pem = cert_obj.cert_bytes.decode("utf-8") # decode cert for storage / return
 
     # ownca uses the cryptogrpahy library to generate RSA keys, default exponent 65537 and size 2048
-    private_key_pem = cert_obj.key_bytes.decode()
-    public_key_pem = cert_obj.public_key_bytes.decode()
+    private_key_pem = cert_obj.key_bytes.decode("utf-8")
+
+    # ensure public key is stored in PEM format
+    public_key = cert_obj.public_key 
+    public_key_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode("utf-8")
 
     # store cert and public key in database
     firestore_db.collection("users").document(uid).set({
+        "email": email,
         "public_certificate": cert_pem,
         "public_key": public_key_pem
     })
@@ -243,6 +253,55 @@ def issue_user_certificate(uid):
     app.logger.info("issued cert and stored it")
 
     return private_key_pem  # send private key to frontend for user to download
+
+@app.route("/create-group", methods=["POST"])
+def create_group():
+    try:
+        data = request.json
+        group_name = data.get("groupName")
+        user_ids = data.get("userIds")  # list of Firebase user UIDs to be added to group
+
+        if not group_name or not user_ids:
+            return jsonify({"error": "missing group name or user IDs"}), 400
+
+        # get AES key
+        aes_key = Fernet.generate_key()
+
+        encrypted_keys = {}
+        for uid in user_ids:
+            user_doc = firestore_db.collection("users").document(uid).get()
+            if not user_doc.exists:
+                app.logger.info(f"{uid} does not exist")
+                continue
+
+            user_data = user_doc.to_dict()
+            public_key_pem = user_data.get("public_key").encode()
+            public_key = serialization.load_pem_public_key(public_key_pem)
+
+            # encrypt the AES key with the user's public key
+            encrypted_aes_key = public_key.encrypt(
+                aes_key,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+            encrypted_keys[uid] = encrypted_aes_key.hex()  # Store as hex string
+
+        # Store the group data
+        group_data = {
+            "name": group_name,
+            "members": user_ids,
+            "encrypted_keys": encrypted_keys
+        }
+
+        firestore_db.collection("groups").document(group_name).set(group_data)
+        return jsonify({"message": "Group created successfully"}), 201
+
+    except Exception as e:
+        app.logger.error(f"Failed to create group: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == "__main__":
     app.run(debug=True)

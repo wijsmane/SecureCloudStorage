@@ -102,6 +102,40 @@
                 }
             }
 
+            async function createGroup() {
+                const groupName = document.getElementById("groupName").value.trim();
+                const userIdsRaw = document.getElementById("userIds").value.trim();
+                const status = document.getElementById("groupStatus");
+
+                if (!groupName || !userIdsRaw) {
+                    status.innerText = "Please enter a group name and at least one user UID.";
+                    return;
+                }
+
+                const userIds = userIdsRaw.split(",").map(uid => uid.trim()); //get array of UIDs
+
+                try {
+                    const response = await fetch("/create-group", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ groupName, userIds })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        status.innerText = `${result.message}`;
+                    } else {
+                        status.innerText = `error: ${result.error}`;
+                    }
+
+                } catch (error) {
+                    console.error("group creation error:", error);
+                    status.innerText = "An error occurred while creating the group.";
+                }
+            }
+
         </script>
     </head>
 
@@ -121,5 +155,12 @@
         
         <!-- list of files -->
         <ul id="file-list"></ul>
+
+        <h3>Create Group</h3>
+        <input type="text" id="groupName" placeholder="Group name" />
+        <textarea id="userIds" placeholder="Comma-separated user UIDs"></textarea>
+        <button onclick="createGroup()">Create Group</button>
+        <p id="groupStatus"></p>
+
     </body>
 </html>
