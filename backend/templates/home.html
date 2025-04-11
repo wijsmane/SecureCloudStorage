@@ -37,6 +37,20 @@
                 }
             }
 
+
+            // Lists the files in a selected group
+            async function listGroupFiles() {
+                const groupId = document.getElementById("groupSelectDownload").value;
+                const response = await fetch(`/list-group-files/${groupId}`, {
+                    credentials: "include"
+                });
+
+                const files = await response.json();
+
+                // Call displayFiles function to show files in the group
+                displayFiles(files);  // Using your pre-existing displayFiles function
+            }
+
             // displays list of files
             function displayFiles(files) {
                 const fileListElement = document.getElementById("file-list");
@@ -45,9 +59,19 @@
                 // make sure files has items
                 if (Array.isArray(files) && files.length > 0) {
                     files.forEach(file => {
-                        const x = document.createElement("li");
-                        x.textContent = file.name;
-                        fileListElement.appendChild(x);
+                        const listItem = document.createElement("li");
+
+                        // create download link for each file
+                        const downloadLink = document.createElement("a");
+                        downloadLink.href = `/download/${file.id}`;  // link to download endpoint
+                        downloadLink.textContent = `${file.name}`;
+                        downloadLink.style.display = "block";
+                        downloadLink.style.marginBottom = "10px";
+
+                        // add download link to the list item
+                        listItem.appendChild(downloadLink);
+                        fileListElement.appendChild(listItem);
+
                     });
                 } else {
                     const x = document.createElement("li");
@@ -92,12 +116,103 @@
                 }
             }
 
+            async function createGroup() {
+                const groupName = document.getElementById("groupName").value.trim();
+                const userIdsRaw = document.getElementById("userIds").value.trim();
+                const status = document.getElementById("groupStatus");
+
+                if (!groupName || !userIdsRaw) {
+                    status.innerText = "Please enter a group name and at least one user UID.";
+                    return;
+                }
+
+                const userIds = userIdsRaw.split(",").map(uid => uid.trim()); //get array of UIDs
+
+                try {
+                    const response = await fetch("/create-group", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ groupName, userIds })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        status.innerText = `${result.message}`;
+                    } else {
+                        status.innerText = `error: ${result.error}`;
+                    }
+
+                } catch (error) {
+                    console.error("group creation error:", error);
+                    status.innerText = "An error occurred while creating the group.";
+                }
+            }
+
+            async function loadUserGroups() {
+                try {
+                    const response = await fetch("/get-user-groups", {
+                        method: "GET",
+                        credentials: "include"
+                    });
+
+                    const groups = await response.json();
+                    const groupList = document.getElementById("user-groups-list");
+                    const groupSelectUpload = document.getElementById("groupSelectUpload");
+                    const groupSelectDownload = document.getElementById("groupSelectDownload");
+
+                    groupList.innerHTML = "";
+                    groupSelectUpload.innerHTML = "";
+                    groupSelectDownload.innerHTML = "";
+
+                    if (groups.length === 0) {
+                        groupList.innerHTML = "<li>No groups found</li>";
+                        return;
+                    }
+
+                    groups.forEach(group => {
+                        // display group name in list
+                        const li = document.createElement("li");
+                        li.textContent = group.name;
+                        groupList.appendChild(li);
+
+                        // populate both dropdowns
+                        const option1 = document.createElement("option");
+                        option1.value = group.id;
+                        option1.textContent = group.name;
+                        groupSelectUpload.appendChild(option1);
+
+                        const option2 = document.createElement("option");
+                        option2.value = group.id;
+                        option2.textContent = group.name;
+                        groupSelectDownload.appendChild(option2);
+                    });
+
+                } catch (err) {
+                    console.error("Error loading user groups:", err);
+                }
+            }
+
+            // optionally call this on page load
+            window.onload = loadUserGroups;
+
         </script>
     </head>
 
     <body>
         <h1>SecureCloudStorage</h1>
+
+        <div>
+            <h3>Your Groups</h3>
+            <ul id="user-groups-list"></ul>
+        </div>
+
         <h3>Upload File to Google Drive</h3>
+        
+        <!-- dropdown to choose group for upload -->
+        <label for="groupSelectUpload">Select Group for Upload:</label>
+        <select id="groupSelectUpload"></select>
 
         <!-- form for file upload -->
         <form onsubmit="uploadFile(event)">
@@ -105,11 +220,30 @@
             <button type="submit">Upload</button>
         </form>
 
+
         <h3>Google Drive Files</h3>
-        <p>Click the button to list the files uploaded to Drive via this app</p>
+            <p>Click the button to list the files uploaded to Drive via this app</p>
         <button onclick="listDriveFiles()">List Drive Files</button>
+
+        <ul id="file-list"></ul>
+
+        <!-- dropdown to choose group for download -->
+        
+        <label for="groupSelectDownload">Select Group for Download:</label>
+        <select id="groupSelectDownload"></select>
+        <button onclick="listGroupFiles()">List Group Files</button>
+        
+        <ul id="group-file-list"></ul>
         
         <!-- list of files -->
+        
         <ul id="file-list"></ul>
+
+        <h3>Create Group</h3>
+        <input type="text" id="groupName" placeholder="Group name" />
+        <textarea id="userIds" placeholder="Comma-separated user UIDs"></textarea>
+        <button onclick="createGroup()">Create Group</button>
+        <p id="groupStatus"></p>
+
     </body>
 </html>

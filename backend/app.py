@@ -46,12 +46,6 @@ def verify_user():
         id_token = data.get("idToken")
         access_token = data.get("accessToken")
         refresh_token = data.get("refreshToken")
-    try:
-        app.logger.info("verifying")
-        data = request.get_json()
-        id_token = data.get("idToken")
-        access_token = data.get("accessToken")
-        refresh_token = data.get("refreshToken")
 
         if not id_token:
             return jsonify({"message": "ID Token is missing"}), 400
@@ -241,36 +235,6 @@ def list_group_files(group_id):
     files = group_data.get("files", [])  
     return jsonify(files), 200
     
-@app.route("/download//<file_id>", methods=['GET'])
-def download_file(file_id):
-    try:
-        drive_service = get_drive_service()
-        
-        # get the file name to ensure correct extension
-        file_metadata = drive_service.files().get(fileId=file_id, fields='name').execute()
-        filename = file_metadata.get('name', f"{file_id}.dat")  # default if name is missing
-
-        # download file content into memory
-        request = drive_service.files().get_media(fileId=file_id)
-        file_stream = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_stream, request) # use the download object from Drive API
-
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-
-        file_stream.seek(0)  # reset stream position for next download
-
-        return send_file(
-            file_stream,
-            as_attachment=True,
-            download_name=filename,  # keep correct extension using original name
-            mimetype='application/octet-stream'
-        )
-
-    except Exception as e:
-        app.logger.error(f"Error downloading file: {str(e)}")
-        return jsonify({"error": "Failed to download file"}), 500
 
 def refresh_access_token(refresh_token):
     url = "https://oauth2.googleapis.com/token"
