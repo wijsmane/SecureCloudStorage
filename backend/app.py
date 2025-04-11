@@ -1,7 +1,7 @@
 import logging, io, requests, firebase_admin, os, tempfile
-from flask import Flask, request, jsonify, render_template, make_response, send_file
+from flask import Flask, request, jsonify, render_template, make_response, send_file, session
 from firebase_admin import credentials, auth, firestore
-from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG
+from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG, SECRET_KEY
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 from ownca import CertificateAuthority
 
 app = Flask(__name__)
+app.secret_key = SECRET_KEY
 
 ca = CertificateAuthority(ca_storage='/backend', common_name='LocalCA')
 
@@ -45,6 +46,12 @@ def verify_user():
         id_token = data.get("idToken")
         access_token = data.get("accessToken")
         refresh_token = data.get("refreshToken")
+    try:
+        app.logger.info("verifying")
+        data = request.get_json()
+        id_token = data.get("idToken")
+        access_token = data.get("accessToken")
+        refresh_token = data.get("refreshToken")
 
         if not id_token:
             return jsonify({"message": "ID Token is missing"}), 400
@@ -62,6 +69,12 @@ def verify_user():
             uid = user_data["uid"]
             email = user_data["email"]
             #print(f"User ID: {uid}")
+
+            # save for access to groups
+            session["user"] = {
+                "uid": user_data["uid"],
+                "email": user_data["email"]
+            }
 
             private_key = issue_user_certificate(uid, email) # issues cert and creates encryption keys (if they don't already exist)
 
@@ -97,6 +110,16 @@ def verify_token(id_token):
     except Exception as e:
         app.logger.error(f"Authentication failed: {e}")
         return None
+    
+@app.route("/get-user-groups", methods=["GET"])
+def get_user_groups():
+    uid = session["user"]["uid"]
+    groups_ref = firestore_db.collection("groups")
+    user_groups = groups_ref.where("members", "array_contains", uid).stream()
+    return jsonify([
+        {"id": g.id, "name": g.to_dict().get("name", g.id)}
+        for g in user_groups
+    ])
 
 # get files from drive
 @app.route("/get-drive-files", methods=["GET"])
@@ -167,6 +190,56 @@ def upload_file():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.route("/download//<file_id>", methods=['GET'])
+def download_file(file_id):
+    try:
+        drive_service = get_drive_service()
+        
+        # get the file name to ensure correct extension
+        file_metadata = drive_service.files().get(fileId=file_id, fields='name').execute()
+        filename = file_metadata.get('name', f"{file_id}.dat")  # default if name is missing
+
+        # download file content into memory
+        request = drive_service.files().get_media(fileId=file_id)
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request) # use the download object from Drive API
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+        file_stream.seek(0)  # reset stream position for next download
+
+        return send_file(
+            file_stream,
+            as_attachment=True,
+            download_name=filename,  # keep correct extension using original name
+            mimetype='application/octet-stream'
+        )
+
+    except Exception as e:
+        app.logger.error(f"Error downloading file: {str(e)}")
+        return jsonify({"error": "Failed to download file"}), 500
+    
+@app.route("/list-group-files/<group_id>", methods=["GET"])
+def list_group_files(group_id):
+    uid = session.get("uid")
+    if not uid:
+        return jsonify([]), 401
+
+    # Fetch the group document
+    group_ref = firestore_db.collection("groups").document(group_id).get()
+    if not group_ref.exists:
+        return jsonify({"error": "Group not found"}), 404
+
+    group_data = group_ref.to_dict()
+    if uid not in group_data.get("user_ids", []):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    # Assuming files are stored as a list inside the group's document
+    files = group_data.get("files", [])  
+    return jsonify(files), 200
     
 @app.route("/download//<file_id>", methods=['GET'])
 def download_file(file_id):
