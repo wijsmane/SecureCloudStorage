@@ -91,9 +91,9 @@ def verify_user():
 
             return response, 200
         else:
-            return jsonify({"message": "Invalid or expired token"}), 401
+            return jsonify({"message": "invalid or expired token"}), 401
     except Exception as e:
-        app.logger.error(f"Error in verify_user: {str(e)}")  # Log any unexpected errors
+        app.logger.error(f"Error in verify_user: {str(e)}")
         return jsonify({"message": "Internal Server Error"}), 500
     
 # verify and decode provided token
@@ -104,9 +104,11 @@ def verify_token(id_token):
     except Exception as e:
         app.logger.error(f"Authentication failed: {e}")
         return None
-    
+
+# retrieve all groups that user is in
 @app.route("/get-user-groups", methods=["GET"])
 def get_user_groups():
+    # get current user from session storage
     uid = session["user"]["uid"]
     groups_ref = firestore_db.collection("groups")
     user_groups = groups_ref.where("members", "array_contains", uid).stream()
@@ -114,24 +116,6 @@ def get_user_groups():
         {"id": g.id, "name": g.to_dict().get("name", g.id)}
         for g in user_groups
     ])
-
-# get files from drive
-@app.route("/get-drive-files", methods=["GET"])
-def get_drive_files():
-    try:
-        drive_service = get_drive_service()
-
-        # list files from the shared folder
-        query = f"'{FOLDER_ID}' in parents and trashed=false"
-        results = drive_service.files().list(q=query).execute()
-
-        files = results.get('files', [])
-
-        return jsonify(files), 200
-
-    except Exception as e:
-        app.logger.error(f"Failed to fetch files: {e}")
-        return jsonify({"error": "Failed to fetch files from Drive"}), 500
 
 # create service to work with Drive API through service account
 def get_drive_service():
@@ -146,19 +130,56 @@ def get_drive_service():
 # path to upload a file
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
 
+    # get group info
+    group_id = request.form.get("groupId")
+    if not group_id:
+        return jsonify({"error": "Group ID is required"}), 40
+    group_doc = firestore_db.collection("groups").document(group_id).get()
+    if not group_doc.exists:
+        return jsonify({"error": "Group not found"}), 404
+    
+    # get file data
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part in request"}), 400
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
 
     # use Python temp directory
     temp_dir = tempfile.gettempdir()
-    file_path = os.path.join(temp_dir, file.filename)
+    temp_file_path = os.path.join(temp_dir, file.filename)
+
+    # get user session to retrieve this user's private key
+    uid = session["user"]["uid"]
 
     try:
-        file.save(file_path) # save to temp
+        # get private key that was uploaded by logged in user
+        private_key = load_logged_in_private_key()
+
+        # get AES key for the group by decrypting with user's private key
+        group_doc = firestore_db.collection("groups").document(group_id).get()
+        if not group_doc.exists:
+            return jsonify({"error": "Group not found"}), 404
+        encrypted_key_hex = group_doc.to_dict()["encrypted_keys"].get(uid)
+        if not encrypted_key_hex:
+            return jsonify({"error": "User not in group"}), 403
+        encrypted_aes_key = bytes.fromhex(encrypted_key_hex)
+        aes_key = private_key.decrypt(
+            encrypted_aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        # encrypt file using Fernet with the decrypted AES group key
+        fernet = Fernet(aes_key)
+        encrypted_content = fernet.encrypt(file.read())
+
+        with open(temp_file_path, "wb") as f:
+            f.write(encrypted_content) # save to temp directory
 
         service = get_drive_service()
 
@@ -168,7 +189,7 @@ def upload_file():
         }
 
         # object to deal with Google Drive uploads
-        media = MediaFileUpload(file_path, mimetype='application/octet-stream', resumable=True)
+        media = MediaFileUpload(temp_file_path, mimetype='application/octet-stream', resumable=True)
 
         uploaded_file = service.files().create(
             body=file_metadata,
@@ -176,21 +197,57 @@ def upload_file():
             fields='id, name, parents'
         ).execute() # upload file to specified folder
 
+        # save data about the file to the group entry in database
+        new_file_entry = {
+            "id": uploaded_file.get("id"),  
+            "name": uploaded_file.get("name"),
+            "uploaded_by": session["user"]["uid"]
+        }
+        # using Firestore's array union to add the new file entry to an existing files list
+        firestore_db.collection("groups").document(group_id).update({
+            "files": firestore.ArrayUnion([new_file_entry])
+        })
+
         # clean up
         del media
-        os.remove(file_path)
+        os.remove(temp_file_path)
 
-        return jsonify({"message": f"{file.filename} uploaded successfully"}), 200
+        return jsonify({"message": f"{file.filename} encrypted and uploaded successfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
-@app.route("/download//<file_id>", methods=['GET'])
-def download_file(file_id):
+# route to download a file from a specific group
+@app.route("/download/<group_id>/<file_id>", methods=['GET'])
+def download_file(group_id, file_id):
     try:
+        # get private key
+        uid = session["user"]["uid"]
+        private_key = load_logged_in_private_key()
+
+        # get group info
+        group_doc = firestore_db.collection("groups").document(group_id).get()
+        if not group_doc.exists:
+            return jsonify({"error": "Group not found"}), 404
+        group_data = group_doc.to_dict()
+        encrypted_key_hex = group_data.get("encrypted_keys", {}).get(uid)
+        if not encrypted_key_hex:
+            return jsonify({"error": "User not in group or missing AES key"}), 403
+
+        # decrypt group AES key using user's private key
+        encrypted_aes_key = bytes.fromhex(encrypted_key_hex)
+        aes_key = private_key.decrypt(
+            encrypted_aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
         drive_service = get_drive_service()
         
-        # get the file name to ensure correct extension
+        # get the file name to ensure correct extension when downloading
         file_metadata = drive_service.files().get(fileId=file_id, fields='name').execute()
         filename = file_metadata.get('name', f"{file_id}.dat")  # default if name is missing
 
@@ -199,43 +256,48 @@ def download_file(file_id):
         file_stream = io.BytesIO()
         downloader = MediaIoBaseDownload(file_stream, request) # use the download object from Drive API
 
+        # keep downloading each chunk until none left
         done = False
         while not done:
             status, done = downloader.next_chunk()
 
         file_stream.seek(0)  # reset stream position for next download
 
+        fernet = Fernet(aes_key)
+        decrypted_content = fernet.decrypt(file_stream.read())
+
+        # send_file method from flask to send to client
         return send_file(
-            file_stream,
+            io.BytesIO(decrypted_content),
             as_attachment=True,
             download_name=filename,  # keep correct extension using original name
             mimetype='application/octet-stream'
         )
-
     except Exception as e:
-        app.logger.error(f"Error downloading file: {str(e)}")
-        return jsonify({"error": "Failed to download file"}), 500
+        return jsonify({"error": "Failed to download file, may need to reupload private key"}), 500
     
+# list files in a certain group (for display and then download)
 @app.route("/list-group-files/<group_id>", methods=["GET"])
 def list_group_files(group_id):
-    uid = session.get("uid")
+    # get current user
+    uid = session.get("user", {}).get("uid")
     if not uid:
         return jsonify([]), 401
 
-    # Fetch the group document
+    # get group users
     group_ref = firestore_db.collection("groups").document(group_id).get()
     if not group_ref.exists:
-        return jsonify({"error": "Group not found"}), 404
-
+        return jsonify({"error": "group not found"}), 404
     group_data = group_ref.to_dict()
-    if uid not in group_data.get("user_ids", []):
-        return jsonify({"error": "Unauthorized"}), 403
+    # make sure current user is in requested group
+    if uid not in group_data.get("members", []):
+        return jsonify({"error": "unauthorized, must be in group"}), 403
 
-    # Assuming files are stored as a list inside the group's document
+    # return list of files
     files = group_data.get("files", [])  
     return jsonify(files), 200
     
-
+# refresh token to ensure access to Drive services
 def refresh_access_token(refresh_token):
     url = "https://oauth2.googleapis.com/token"
     data = {
@@ -256,7 +318,9 @@ def refresh_access_token(refresh_token):
         app.logger.error("could not refresh access token")
         return None
 
+# function to issue certificates OwnCA library
 def issue_user_certificate(uid, email):
+    # if user has already logged in before, do not generate certificate and keys (they are stored already)
     user_doc = firestore_db.collection("users").document(uid).get()
     if user_doc.exists and "public_certificate" in user_doc.to_dict():
         return "keys already exist"
@@ -273,7 +337,7 @@ def issue_user_certificate(uid, email):
     # ownca uses the cryptogrpahy library to generate RSA keys, default exponent 65537 and size 2048
     private_key_pem = cert_obj.key_bytes.decode("utf-8")
 
-    # ensure public key is stored in PEM format
+    # debug - ensure public key is stored in PEM format
     public_key = cert_obj.public_key 
     public_key_pem = public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
@@ -287,10 +351,10 @@ def issue_user_certificate(uid, email):
         "public_key": public_key_pem
     })
 
-    app.logger.info("issued cert and stored it")
+    #app.logger.info("issued cert and stored it")
+    return private_key_pem  # send private key to frontend for user to download and store securely themself
 
-    return private_key_pem  # send private key to frontend for user to download
-
+# create group based on user inputs
 @app.route("/create-group", methods=["POST"])
 def create_group():
     try:
@@ -301,9 +365,10 @@ def create_group():
         if not group_name or not user_ids:
             return jsonify({"error": "missing group name or user IDs"}), 400
 
-        # get AES key
+        # get AES key that will be used to encrypt all files for the group
         aes_key = Fernet.generate_key()
 
+        # encrypt the AES key with each user's public key
         encrypted_keys = {}
         for uid in user_ids:
             user_doc = firestore_db.collection("users").document(uid).get()
@@ -311,11 +376,12 @@ def create_group():
                 app.logger.info(f"{uid} does not exist")
                 continue
 
+            # load public key
             user_data = user_doc.to_dict()
             public_key_pem = user_data.get("public_key").encode()
             public_key = serialization.load_pem_public_key(public_key_pem)
 
-            # encrypt the AES key with the user's public key
+            # encrypt
             encrypted_aes_key = public_key.encrypt(
                 aes_key,
                 padding.OAEP(
@@ -324,21 +390,249 @@ def create_group():
                     label=None
                 )
             )
-            encrypted_keys[uid] = encrypted_aes_key.hex()  # Store as hex string
+            encrypted_keys[uid] = encrypted_aes_key.hex()  # store as hex string
 
-        # Store the group data
+        # store the group data
         group_data = {
             "name": group_name,
             "members": user_ids,
-            "encrypted_keys": encrypted_keys
+            "encrypted_keys": encrypted_keys,
+            "files" : [] # placeholder for eventual file information
         }
 
+        # save to database
         firestore_db.collection("groups").document(group_name).set(group_data)
         return jsonify({"message": "Group created successfully"}), 201
-
     except Exception as e:
         app.logger.error(f"Failed to create group: {e}")
         return jsonify({"error": "Internal server error"}), 500
+    
+# add user to an existing group
+@app.route("/add-user-to-group", methods=["POST"])
+def add_user_to_group():
+    try:
+        data = request.get_json()
+        group_id = data.get("groupId")
+        new_user_id = data.get("userId")
+        
+
+        uid = session["user"]["uid"]
+        private_key = load_logged_in_private_key()
+
+        group_ref = firestore_db.collection("groups").document(group_id)
+        group_doc = group_ref.get()
+        if not group_doc.exists:
+            return jsonify({"error": "Group does not exist"}), 404
+
+        group_data = group_doc.to_dict()
+        encrypted_keys = group_data["encrypted_keys"]
+
+        # decrypt group's AES key using the logged in user's private key
+        encrypted_key_hex = encrypted_keys.get(uid)
+        if not encrypted_key_hex:
+            return jsonify({"error": "You don't have access to this group"}), 403
+        
+        aes_key = private_key.decrypt(
+            bytes.fromhex(encrypted_key_hex),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        # get new user's public key
+        new_user_doc = firestore_db.collection("users").document(new_user_id).get()
+        if not new_user_doc.exists:
+            return jsonify({"error": "New user does not exist"}), 404
+
+        public_key_pem = new_user_doc.to_dict()["public_key"].encode()
+        public_key = serialization.load_pem_public_key(public_key_pem)
+
+        # encrypt group AES key for new user
+        encrypted_for_new_user = public_key.encrypt(
+            aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        # update group entry in database
+        firestore_db.collection("groups").document(group_id).update({
+            "members": firestore.ArrayUnion([new_user_id]),
+            f"encrypted_keys.{new_user_id}": encrypted_for_new_user.hex()
+        })
+
+        return jsonify({"message": "User added to group successfully"}), 200
+
+    except Exception as e:
+        app.logger.error(f"Failed to add user: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+# remove user from a specified group, generate a new AES key, re-encrypt files, and store new keys
+@app.route("/remove-user-from-group", methods=["POST"])
+def remove_user_from_group():
+    try:
+        data = request.json
+        group_name = data.get("groupName")
+        user_id = data.get("userId")
+
+        if not group_name or not user_id:
+            return jsonify({"error": "Missing group ID or user ID"}), 400
+
+        group_ref = firestore_db.collection("groups").document(group_name)
+        group_doc = group_ref.get()
+
+        if not group_doc.exists:
+            return jsonify({"error": "Group not found"}), 404
+
+        # get the member, encrypted_keys, and files in the group
+        group_data = group_doc.to_dict()
+        members = group_data.get("members", [])
+        encrypted_keys = group_data.get("encrypted_keys", {})
+        files = group_data.get("files", []) 
+
+        # if user to remove is not in the group, exit
+        if user_id not in members:
+            return jsonify({"error": "User not in group"}), 400
+
+        members.remove(user_id)
+        encrypted_keys.pop(user_id, None)
+
+        # if group is now empty do not try to re-encrypt
+        if not members:
+            return jsonify({"error": "At least one member must remain"}), 400
+
+        # load old AES key by using the current user's private key
+        aes_key = None
+        for uid, encrypted_key_hex in encrypted_keys.items():
+            private_key = load_logged_in_private_key()
+            encrypted_aes_key = bytes.fromhex(encrypted_key_hex)
+            aes_key = private_key.decrypt(
+                encrypted_aes_key,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+            break  # only need to do this once to get the AES key
+
+        if not aes_key:
+            return jsonify({"error": "AES key not found"}), 400
+
+        fernet = Fernet(aes_key)
+        drive_service = get_drive_service()
+
+        # decrypt each file
+        decrypted_files = []
+        for file in files:
+            file_id = file.get("id")
+            # use Drive to download each file
+            req = drive_service.files().get_media(fileId=file_id)
+            file_stream = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_stream, req)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            file_stream.seek(0) # reset
+            # decrypt with AES key
+            decrypted_data = fernet.decrypt(file_stream.read())
+            decrypted_files.append((file_id, decrypted_data))
+
+        # generate a new AES key and re-encrypt files
+        new_aes_key = Fernet.generate_key()
+        new_fernet = Fernet(new_aes_key)
+
+        for file_id, decrypted_data in decrypted_files:
+            reencrypted_data = new_fernet.encrypt(decrypted_data)
+            # save re-encrypted file to a temp file
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(reencrypted_data)
+                temp_file_path = temp_file.name
+
+            # create MediaFileUpload (Drive object for handling upload) with the temp file path
+            media_body = MediaFileUpload(temp_file_path, mimetype='application/octet-stream')
+
+            # upload file back to Drive, overwriting the previous version
+            drive_service.files().update(fileId=file_id, media_body=media_body).execute()
+
+            # clean up temp file
+            del media_body
+            os.remove(temp_file_path)
+
+        # encrypt new AES key for remaining users
+        new_encrypted_keys = {}
+        for member_uid in members:
+            user_doc = firestore_db.collection("users").document(member_uid).get()
+            if user_doc.exists:
+                public_key_pem = user_doc.to_dict().get("public_key").encode()
+                public_key = serialization.load_pem_public_key(public_key_pem)
+
+                encrypted_aes_key = public_key.encrypt(
+                    new_aes_key,
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None
+                    )
+                )
+                new_encrypted_keys[member_uid] = encrypted_aes_key.hex()
+
+        # update group document with new keys
+        group_ref.update({
+            "members": members,
+            "encrypted_keys": new_encrypted_keys
+        })
+
+        return jsonify({"message": f"User {user_id} removed and files re-encrypted"}), 200
+
+    except Exception as e:
+        app.logger.error(f"Failed to remove user from group: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+# route to temporarily save private key that user uploads
+@app.route("/upload-private-key", methods=["POST"])
+def upload_private_key():
+        if "private_key" not in request.files:
+            return jsonify({"error": "No key file uploaded"}), 400
+
+        pk_file = request.files["private_key"]
+        if pk_file.filename == "":
+            return jsonify({"error": "Empty filename"}), 400
+
+        uid = session.get("user", {}).get("uid")
+        if not uid:
+            return jsonify({"error": "User not authenticated"}), 401
+
+        # save private key in temp directory
+        temp_dir_key = tempfile.gettempdir()
+        key_path = os.path.join(temp_dir_key, f"{uid}_private.pem")
+
+        try:
+            pk_file.save(key_path)
+            session["private_key_path"] = key_path  # store key for next action
+            return jsonify({"message": "Private key uploaded successfully"}), 200
+        except Exception as e:
+            app.logger.error(f"Error saving private key: {e}")
+            return jsonify({"error": "Failed to store private key"}), 500
+        
+# function to load private key
+def load_logged_in_private_key():
+    uid = session.get("user", {}).get("uid")
+    key_path = session.get("private_key_path")
+
+    if not uid or not key_path or not os.path.exists(key_path):
+        raise Exception("Private key not found for user session")
+
+    with open(key_path, "rb") as key_file:
+        private_key = serialization.load_pem_private_key(key_file.read(), password=None)
+
+    del session["private_key_path"] # now delete - requires reupload of private key before every action
+    
+    return private_key
 
 if __name__ == "__main__":
     app.run(debug=True)

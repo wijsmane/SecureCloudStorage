@@ -6,54 +6,20 @@
         <title>Secure Cloud Storage</title>
 
         <script>
-            
-            // function to list files added by this app to Drive
-            async function listDriveFiles() {
-                try {
-                    const response = await fetch("/get-drive-files", {
-                        method: "GET",
-                        credentials: "include",  // ensures cookies (which store tokens) are sent
-                        headers: {
-                            "Content-Type": "application/json"
-                        }
-                    });
-
-                    if (response.status === 401) {
-                        // console.error("token invalid or expired");
-                        // popup to explain error
-                        alert("Session expired. Please sign in again.");
-                        window.location.href = "/";
-                        return;
-                    }
-
-                    const data = await response.json();
-                    
-                    console.log("files: ", data);
-                    displayFiles(data);  // call function to display files
-
-                } 
-                catch (error) {
-                    console.error("error getting files: ", error);
-                }
-            }
-
-
             // Lists the files in a selected group
             async function listGroupFiles() {
-                const groupId = document.getElementById("groupSelectDownload").value;
-                const response = await fetch(`/list-group-files/${groupId}`, {
-                    credentials: "include"
-                });
+                    const groupId = document.getElementById("groupSelectDownload").value;
+                    const response = await fetch(`/list-group-files/${groupId}`, {
+                        credentials: "include"
+                    });
+                    const files = await response.json();
 
-                const files = await response.json();
-
-                // Call displayFiles function to show files in the group
-                displayFiles(files);  // Using your pre-existing displayFiles function
+                    displayFiles(files, groupId);
             }
 
             // displays list of files
-            function displayFiles(files) {
-                const fileListElement = document.getElementById("file-list");
+            function displayFiles(files, groupId) {
+                const fileListElement = document.getElementById("group-file-list");
                 fileListElement.innerHTML = "";  // clear list to redo
 
                 // make sure files has items
@@ -63,7 +29,7 @@
 
                         // create download link for each file
                         const downloadLink = document.createElement("a");
-                        downloadLink.href = `/download/${file.id}`;  // link to download endpoint
+                        downloadLink.href = `/download/${groupId}/${file.id}`;  // link to download endpoint
                         downloadLink.textContent = `${file.name}`;
                         downloadLink.style.display = "block";
                         downloadLink.style.marginBottom = "10px";
@@ -84,22 +50,30 @@
             async function uploadFile(event) {
                 event.preventDefault();  // ensures default form is not submitted on page load
 
-                const formData = new FormData();
-                const fileInput = document.querySelector('input[type="file"]');
+                const fileInput = document.getElementById("uploadFileInput");
+                if (!fileInput) {
+                    console.error("File input element not found.");
+                    return;
+                }
+                
+                // get first file from input
                 const file = fileInput.files[0];
+                const groupId = document.getElementById("groupSelectUpload").value;
 
-                if (!file) {
-                    alert("Please select a file");
+                if (!file || !groupId) {
+                    alert("Please select a file and a group");
                     return;
                 }
 
+                const formData = new FormData();
                 formData.append("file", file);
+                formData.append("groupId", groupId);
 
                 try {
                     // send file to backend
                     const response = await fetch('/upload', {
                         method: 'POST',
-                        body: formData, // contains file
+                        body: formData, // contains file and groupId
                         credentials: "include", // include tokens
                     });
 
@@ -111,7 +85,7 @@
                     }
 
                 } catch (error) {
-                    console.error("Error during file upload: ", error);
+                    console.error("error during file upload: ", error);
                     alert("Something went wrong. Please try again later.");
                 }
             }
@@ -135,18 +109,47 @@
                         credentials: "include",
                         body: JSON.stringify({ groupName, userIds })
                     });
-
                     const result = await response.json();
-
                     if (response.ok) {
-                        status.innerText = `${result.message}`;
+                        alert(result.message);
                     } else {
-                        status.innerText = `error: ${result.error}`;
+                        alert(result.error);
                     }
-
                 } catch (error) {
                     console.error("group creation error:", error);
                     status.innerText = "An error occurred while creating the group.";
+                }
+            }
+
+            async function removeUserFromGroup(event) {
+                event.preventDefault();
+
+                const groupName = document.getElementById("removeGroupName").value.trim();
+                const userId = document.getElementById("removeUserId").value.trim();
+                const status = document.getElementById("removeUserStatus");
+
+                if (!groupName || !userId) {
+                    status.textContent = "Both Group ID and User UID are required.";
+                    return;
+                }
+
+                try {
+                    const response = await fetch("/remove-user-from-group", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ groupName, userId })
+                    });
+
+                    const result = await response.json();
+                    if (response.ok) {
+                        alert(result.message);
+                    } else {
+                        alert(result.error);
+                    }
+                } catch (error) {
+                    console.error("Error removing user from group:", error);
+                    status.textContent = "An unexpected error occurred.";
                 }
             }
 
@@ -194,7 +197,54 @@
                 }
             }
 
-            // optionally call this on page load
+            async function addUserToGroup(event) {
+                event.preventDefault();
+
+                const groupId = document.getElementById("addGroupId").value.trim();
+                const userId = document.getElementById("addUserId").value.trim();
+
+                if (!groupId || !userId) {
+                    alert("Please provide both group ID and user UID.");
+                    return;
+                }
+                try {
+                    const response = await fetch("/add-user-to-group", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ groupId, userId })
+                    });
+
+                    const result = await response.json();
+                    alert(result.message || result.error);
+                } catch (error) {
+                    console.error("Error adding user to group:", error);
+                    alert("An error occurred.");
+                }
+            }
+
+            // form to upload the current user's private key
+            async function uploadPrivateKey(event) {
+                event.preventDefault(); 
+
+                const formData = new FormData(document.getElementById("privateKeyForm"));
+
+                try {
+                    const response = await fetch("/upload-private-key", {
+                        method: "POST",
+                        body: formData,
+                        credentials: "include", // Include credentials if needed
+                    });
+
+                    const result = await response.json();
+                    alert(result.message || result.error);
+                } catch (error) {
+                    console.error("Error uploading private key:", error);
+                    alert("An unexpected error occurred.");
+                }
+            }
+
+            // load list of user's groups when the page first loads
             window.onload = loadUserGroups;
 
         </script>
@@ -208,6 +258,13 @@
             <ul id="user-groups-list"></ul>
         </div>
 
+        <h3>Upload Your Private Key</h3>
+        <form id="privateKeyForm" enctype="multipart/form-data" onsubmit="uploadPrivateKey(event)">
+            <input type="file" name="private_key" accept=".pem" required />
+            <button type="submit">Upload Key</button>
+        </form>
+
+
         <h3>Upload File to Google Drive</h3>
         
         <!-- dropdown to choose group for upload -->
@@ -215,29 +272,20 @@
         <select id="groupSelectUpload"></select>
 
         <!-- form for file upload -->
-        <form onsubmit="uploadFile(event)">
-            <input type="file" name="file" />
+        <form id= "uploadForm" onsubmit="uploadFile(event)">
+            <input id="uploadFileInput" type="file" name="file" />
             <button type="submit">Upload</button>
         </form>
 
-
-        <h3>Google Drive Files</h3>
-            <p>Click the button to list the files uploaded to Drive via this app</p>
-        <button onclick="listDriveFiles()">List Drive Files</button>
-
-        <ul id="file-list"></ul>
+        
+        <h3>Download Files by Group</h3>
 
         <!-- dropdown to choose group for download -->
-        
         <label for="groupSelectDownload">Select Group for Download:</label>
         <select id="groupSelectDownload"></select>
         <button onclick="listGroupFiles()">List Group Files</button>
-        
         <ul id="group-file-list"></ul>
         
-        <!-- list of files -->
-        
-        <ul id="file-list"></ul>
 
         <h3>Create Group</h3>
         <input type="text" id="groupName" placeholder="Group name" />
@@ -245,5 +293,26 @@
         <button onclick="createGroup()">Create Group</button>
         <p id="groupStatus"></p>
 
+        <h4>Add User to Group</h4>
+        <form onsubmit="addUserToGroup(event)">
+            <label for="addGroupId">Group ID:</label>
+            <input type="text" id="addGroupId" placeholder="Group name" required />
+            <label for="addUserId">User UID:</label>
+            <input type="text" id="addUserId" placeholder="User UID" required />
+            <button type="submit">Add User</button>
+        </form>
+
+        <h4>Remove User from Group</h4>
+        <form id="removeUserForm" onsubmit="removeUserFromGroup(event)">
+            <label for="removeGroupName">Group ID:</label>
+            <input type="text" id="removeGroupName" required placeholder="Group name" />
+
+            <label for="removeUserId">User UID to remove:</label>
+            <input type="text" id="removeUserId" required placeholder="User UID" />
+
+            <button type="submit">Remove User</button>
+            <p id="removeUserStatus"></p>
+        </form>
+    
     </body>
 </html>
