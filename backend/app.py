@@ -1,7 +1,7 @@
 import logging, io, requests, firebase_admin, os, tempfile
 from flask import Flask, request, jsonify, render_template, make_response, send_file, session
 from firebase_admin import credentials, auth, firestore
-from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG, SECRET_KEY
+from config import CLIENT_ID, CLIENT_SECRET, FOLDER_ID, FIREBASE_CONFIG, KEY
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 from ownca import CertificateAuthority
 
 app = Flask(__name__)
-app.secret_key = SECRET_KEY
+app.secret_key = KEY
 
 ca = CertificateAuthority(ca_storage='/backend', common_name='LocalCA')
 
