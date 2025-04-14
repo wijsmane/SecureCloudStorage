@@ -46,24 +46,12 @@ def verify_user():
         id_token = data.get("idToken")
         access_token = data.get("accessToken")
         refresh_token = data.get("refreshToken")
-
-        if not id_token:
-            return jsonify({"message": "ID Token is missing"}), 400
-        
-        if not access_token:
-            return jsonify({"message": "Access Token is missing"}), 400
-        
-        if not refresh_token:
-            return jsonify({"message": "Refresh Token is missing"}), 400
         
         # check if the id token is valid
         user_data = verify_token(id_token)
-
         if user_data:
             uid = user_data["uid"]
             email = user_data["email"]
-            #print(f"User ID: {uid}")
-
             # save for access to groups
             session["user"] = {
                 "uid": user_data["uid"],
@@ -80,15 +68,12 @@ def verify_user():
             }
             
             if private_key != "keys already exist":
-                response["private_key"] = private_key
-                #print(f"{response["private_key"]}")
+                response["private_key"] = private_key # save private key if not already
 
             response = make_response(jsonify(response))
-
             # store tokens for later use
             response.set_cookie("access_token", access_token, httponly=True, secure=False, samesite="Strict")
             response.set_cookie("refresh_token", refresh_token, httponly=True, secure=False, samesite="Strict")
-
             return response, 200
         else:
             return jsonify({"message": "invalid or expired token"}), 401
@@ -117,20 +102,32 @@ def get_user_groups():
         for g in user_groups
     ])
 
+@app.route("/get-all-groups", methods=["GET"])
+def get_all_groups():
+    try:
+        groups_ref = firestore_db.collection("groups")
+        all_group_docs = groups_ref.stream()
+
+        return jsonify([
+            {"id": g.id, "name": g.to_dict().get("name", g.id)}
+            for g in all_group_docs
+        ]), 200
+    
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch groups"}), 500
+
 # create service to work with Drive API through service account
 def get_drive_service():
     credentials = service_account.Credentials.from_service_account_file(
         "StorageDrive.json",
         scopes=['https://www.googleapis.com/auth/drive']
     )
-
     drive_service = build('drive', 'v3', credentials=credentials)
     return drive_service
 
 # path to upload a file
 @app.route('/upload', methods=['POST'])
 def upload_file():
-
     # get group info
     group_id = request.form.get("groupId")
     if not group_id:
@@ -153,6 +150,8 @@ def upload_file():
     # get user session to retrieve this user's private key
     uid = session["user"]["uid"]
 
+    app.logger.info("encrypting")
+
     try:
         # get private key that was uploaded by logged in user
         private_key = load_logged_in_private_key()
@@ -164,6 +163,8 @@ def upload_file():
         encrypted_key_hex = group_doc.to_dict()["encrypted_keys"].get(uid)
         if not encrypted_key_hex:
             return jsonify({"error": "User not in group"}), 403
+        
+        app.logger.info("bytes")
         encrypted_aes_key = bytes.fromhex(encrypted_key_hex)
         aes_key = private_key.decrypt(
             encrypted_aes_key,
@@ -174,6 +175,7 @@ def upload_file():
             )
         )
 
+        app.logger.info("fernet")
         # encrypt file using Fernet with the decrypted AES group key
         fernet = Fernet(aes_key)
         encrypted_content = fernet.encrypt(file.read())
@@ -246,21 +248,17 @@ def download_file(group_id, file_id):
         )
 
         drive_service = get_drive_service()
-        
         # get the file name to ensure correct extension when downloading
         file_metadata = drive_service.files().get(fileId=file_id, fields='name').execute()
         filename = file_metadata.get('name', f"{file_id}.dat")  # default if name is missing
 
-        # download file content into memory
+        # download file content
         request = drive_service.files().get_media(fileId=file_id)
         file_stream = io.BytesIO()
         downloader = MediaIoBaseDownload(file_stream, request) # use the download object from Drive API
-
-        # keep downloading each chunk until none left
         done = False
-        while not done:
+        while not done: # keep downloading each chunk until none left
             status, done = downloader.next_chunk()
-
         file_stream.seek(0)  # reset stream position for next download
 
         fernet = Fernet(aes_key)
@@ -290,8 +288,8 @@ def list_group_files(group_id):
         return jsonify({"error": "group not found"}), 404
     group_data = group_ref.to_dict()
     # make sure current user is in requested group
-    if uid not in group_data.get("members", []):
-        return jsonify({"error": "unauthorized, must be in group"}), 403
+    # if uid not in group_data.get("members", []):
+    #     return jsonify({"error": "unauthorized, must be in group"}), 403
 
     # return list of files
     files = group_data.get("files", [])  
@@ -633,6 +631,8 @@ def load_logged_in_private_key():
     del session["private_key_path"] # now delete - requires reupload of private key before every action
     
     return private_key
+
+
 
 if __name__ == "__main__":
     app.run(debug=True)
